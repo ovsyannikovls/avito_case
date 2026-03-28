@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Literal
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
 
 
 class MicroCategory(BaseModel):
@@ -113,3 +113,42 @@ class SecondStepResult(BaseModel): # Формат для перехода к с�
     chunks: List[ServiceChunk]
 
 
+#================ Third step ==================
+
+
+class ThirdStepInput(BaseModel): # Соединяем файлы из второго и первого шага для проверки каждого чанка внутри контекста
+    secondStage: SecondStepResult
+    segments: List[NormalizenSegment]
+    
+    
+class ChunkFeatures(BaseModel): # Признаки одного чанка, по которым будет определяться его релевантность
+    chunkText: str
+    segmentText: str
+    chunkType: str
+    candidateMcIds: List[int]
+    selectedMcId: Optional[int] = None
+    secondStageScore: float
+    segmentId: int
+
+    hasIndependentMarker: bool
+    hasDependentMarker: bool
+
+    isAtomic: bool
+    isComposite: bool
+    isGeneric: bool
+
+    thirdStageScore: float
+    label: Literal["independent", "dependent"]
+                   
+    
+class Draft(BaseModel): # Концептуально - новое объявление, которое система предлагает создать (возможно использовать для дальнейшего создания текста черновика)
+    mcId: int
+    mcTitle: str
+    text: str
+
+
+class ThirdStageResult(BaseModel): # Финальный результат третьего этапа
+    itemId: int
+    detectedMcIds: List[int]
+    shouldSplit: bool # Решаем, делать ли сплит в принципе
+    drafts: List[Draft] = Field(default_factory=list)

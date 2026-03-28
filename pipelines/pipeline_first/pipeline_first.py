@@ -1,33 +1,7 @@
 import re
-from typing import List, Literal
-from pydantic import BaseModel
+from typing import List
 
-
-
-class NormalizenSentence(BaseModel):
-    sentId: int
-    text: str
-    start: int
-    end: int
-    
-    
-class NormalizenSegment(BaseModel): # Минимальные смысловые куски, на которые разбивается предложение
-    segmentId: int
-    sentId: int
-    text: str
-    start: int
-    end: int
-    segmentType: Literal["sentence", "clause", "list_item"]
-
-
-class FirstStep(BaseModel): # Информация в json для перехода на следующий этап пайплайна
-    itemId: int
-    sourceMcId: int
-    sourceMcTitle: str
-    text: str
-    normalizedText: str
-    sentences: List[NormalizenSentence]
-    segments: List[NormalizenSegment]
+from schemas import FirstStep, NormalizenSentence, NormalizenSegment
     
     
 
@@ -198,6 +172,7 @@ def first_step_pipeline(item: dict) -> FirstStep:
         sentences=sentences,
         segments=segments
     )
+
 
 if __name__ == "__main__":
     
