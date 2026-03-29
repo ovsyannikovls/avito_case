@@ -1,154 +1,282 @@
 from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from typing import List, Dict, Optional, Literal
 
+
+# =========================
+# INPUT / DICTIONARY
+# =========================
 
 class MicroCategory(BaseModel):
     mcId: int
     mcTitle: str
     keyPhrases: List[str]
+    description: Optional[str] = None
 
 
-class InputAds(BaseModel):
-    itemId: int
-    mcId: int
-    mcTitle: str
-    description: str
-
-
-class OutputAds(BaseModel):
-    mcId: int
-    mcTitle: str
-    text: str
-
-
-class Answer(BaseModel):
-    shouldSplit: bool
-    drafts: List[OutputAds]
-    
-    
-#================ First step ==================
-
-# Задача разбить описание на минимальны смысловые части при этом сохранив контекст
-
-
-# Формальные предложения после нормализации текста.
-# Это верхний уровень разбиения, обычно по . ! ? и переносам строки.
-class NormalizenSentence(BaseModel):
-    sentId: int
-    text: str
-    start: int
-    end: int
-    
-    
-class NormalizenSegment(BaseModel): # Минимальные смысловые куски, на которые разбивается предложение
-    segmentId: int
-    sentId: int
-    text: str
-    start: int
-    end: int
-    segmentType: Literal["sentence", "clause", "list_item"]
-
-
-class FirstStep(BaseModel): # Информация в json для перехода на следующий этап пайплайна
+class InputAd(BaseModel):
     itemId: int
     sourceMcId: int
     sourceMcTitle: str
-    text: str
-    normalizedText: str
-    sentences: List[NormalizenSentence]
-    segments: List[NormalizenSegment]
-    
-    
-# Инварианты (константы) по завершении первого этапа:
-#
-# По sentences
-#
-# предложения не пересекаются;
-# порядок соответствует тексту;
-# sentId уникален внутри объявления;
-# start < end;
-# text == normalizedText[start:end] либо хотя бы соответствует этому с точностью до trim.
-#
-# По segments
-#
-# каждый сегмент принадлежит ровно одному sentId;
-# сегменты лежат внутри соответствующего предложения;
-# сегменты не должны пересекаться, если это один уровень сегментации;
-# сегмент должен быть минимальной смысловой единицей.
-#
-# 1. Предобработка (Normalization)
-# 2. Выделение сервисных фраз (Service Span Detection)
-# 3. Первичный Split (Chunking)
-# ...
+    description: str
 
 
-#================ Second step==================
+# =========================
+# FIRST STAGE — SEGMENTATION
+# =========================
 
-
-class SpanCandidate(BaseModel): # Сырое предположение (возможно для проверки уверенности?)
+class Sentence(BaseModel):
+    sentId: int
     text: str
     start: int
     end: int
-    sentId: int
+
+
+class Segment(BaseModel):
     segmentId: int
-    extractor: str
-    evidence: dict = {}
+    sentId: int
 
-
-class ServiceChunk(BaseModel): # Смысловые чанки, которые прошли первый этап - присваивание chunkType
     text: str
     start: int
     end: int
-    sentId: int
-    segmentId: int
-    chunkType: Literal["atomic", "composite", "generic"]
-    candidateMcIds: List[int]
-    score: float | None = None
-    evidence: dict | None = None
 
+    segmentType: Literal["sentence", "clause", "list_item"]
 
-class SecondStepResult(BaseModel): # Формат для перехода к следующему этапу
-    itemId: int
-    sourceMcId: int
-    chunks: List[ServiceChunk]
-
-
-#================ Third step ==================
-
-
-class ThirdStepInput(BaseModel): # Соединяем файлы из второго и первого шага для проверки каждого чанка внутри контекста
-    secondStage: SecondStepResult
-    segments: List[NormalizenSegment]
-    
-    
-class ChunkFeatures(BaseModel): # Признаки одного чанка, по которым будет определяться его релевантность
-    chunkText: str
-    segmentText: str
-    chunkType: str
-    candidateMcIds: List[int]
-    selectedMcId: Optional[int] = None
-    secondStageScore: float
-    segmentId: int
+    segmentRole: Literal[
+        "main_service",
+        "separate_service",
+        "included_service",
+        "context"
+    ]
 
     hasIndependentMarker: bool
     hasDependentMarker: bool
 
-    isAtomic: bool
-    isComposite: bool
-    isGeneric: bool
+    markerType: Optional[Literal[
+        "separate",
+        "including",
+        "and",
+        "none"
+    ]]
 
-    thirdStageScore: float
-    label: Literal["independent", "dependent"]
-                   
-    
-class Draft(BaseModel): # Концептуально - новое объявление, которое система предлагает создать (возможно использовать для дальнейшего создания текста черновика)
+
+class FirstStageResult(BaseModel):
+    itemId: int
+    sourceMcId: int
+    sourceMcTitle: str
+
+    rawText: str
+    normalizedText: str
+
+    sentences: List[Sentence]
+    segments: List[Segment]
+
+
+# =========================
+# SECOND STAGE — SPAN EXTRACTION; Переписать полностью оставшиеся контракты с учетом того что может принять нейронка
+# =========================
+
+
+class CandidateSource(BaseModel):
+    segmentId: int
+    sentId: int
+
+    role: Literal[
+        "main_service",
+        "separate_service",
+        "included_service"
+    ]
+
+    markerType: Optional[Literal[
+        "separate",
+        "including",
+        "and",
+        "none"
+    ]] = None
+
+    hasIndependentMarker: bool = False
+    hasDependentMarker: bool = False
+
+
+class ServiceCandidate(BaseModel):
+    candidateId: int
+
+    rawText: str
+    normalizedText: str
+    canonicalText: Optional[str] = None
+
+    sources: List[CandidateSource] = Field(default_factory=list)
+
+    hasIndependentMarker: bool = False
+    hasDependentMarker: bool = False
+
+    markerTypes: List[Literal[
+        "separate",
+        "including",
+        "and",
+        "none"
+    ]] = Field(default_factory=list)
+
+    hasNegation: bool = False
+
+    builderType: Literal[
+        "segment",
+        "split",
+        "merge",
+        "hybrid"
+    ] = "segment"
+
+    buildConfidence: float = 1.0
+
+
+class CandidateCategoryScore(BaseModel):
+    mcId: int
+    score: float
+
+    matchedPhrases: List[str] = Field(default_factory=list)
+
+    matchType: Literal[
+        "exact",
+        "partial",
+        "semantic"
+    ]
+
+    numMatches: int = 0
+
+
+class ScoredCandidate(BaseModel):
+    candidate: ServiceCandidate
+
+    categoryScores: List[CandidateCategoryScore] = Field(default_factory=list)
+
+    selectedMcId: Optional[int] = None
+    selectedScore: Optional[float] = None
+
+    secondMcId: Optional[int] = None
+    secondScore: Optional[float] = None
+
+    scoreGap: Optional[float] = None
+
+
+class SecondStageResult(BaseModel):
+    itemId: int
+    sourceMcId: int
+
+    candidates: List[ScoredCandidate] = Field(default_factory=list)
+
+
+# =========================
+# THIRD STAGE — CLASSIFICATION + ML
+# =========================
+
+class CategoryEvidence(BaseModel):
+    mcId: int
+
+    candidateIds: List[int] = Field(default_factory=list)
+
+    bestCandidateId: Optional[int] = None
+    bestScore: float = 0.0
+    secondBestScore: float = 0.0
+
+    totalCandidates: int = 0
+    totalMatchedPhrases: int = 0
+
+    hasIndependentMarker: bool = False
+    hasDependentMarker: bool = False
+    hasNegation: bool = False
+
+    hasMainRole: bool = False
+    hasSeparateRole: bool = False
+    hasIncludedRole: bool = False
+
+    hasExactMatch: bool = False
+    hasPartialMatch: bool = False
+    hasSemanticMatch: bool = False
+
+    isSourceCategory: bool = False
+
+
+class CategoryFeatures(BaseModel):
+    mcId: int
+
+    bestScore: float = 0.0
+    secondBestScore: float = 0.0
+    scoreGap: float = 0.0
+
+    totalCandidates: int = 0
+    totalMatchedPhrases: int = 0
+
+    hasIndependentMarker: bool = False
+    hasDependentMarker: bool = False
+    hasNegation: bool = False
+
+    hasMainRole: bool = False
+    hasSeparateRole: bool = False
+    hasIncludedRole: bool = False
+
+    hasExactMatch: bool = False
+    hasPartialMatch: bool = False
+    hasSemanticMatch: bool = False
+
+    isSourceCategory: bool = False
+
+
+class CategoryDecision(BaseModel):
+    mcId: int
+
+    isDetected: bool
+    isIndependent: bool
+
+    detectionConfidence: float = 0.0
+    splitConfidence: float = 0.0
+
+    decisionType: Literal[
+        "source_only",
+        "dependent",
+        "independent",
+        "rejected"
+    ]
+
+
+class ThirdStageResult(BaseModel):
+    itemId: int
+    sourceMcId: int
+
+    detectedMcIds: List[int] = Field(default_factory=list)
+
+    independentMcIds: List[int] = Field(default_factory=list)
+    dependentMcIds: List[int] = Field(default_factory=list)
+
+    shouldSplit: bool = False
+
+    categoryEvidences: List[CategoryEvidence] = Field(default_factory=list)
+    categoryFeatures: List[CategoryFeatures] = Field(default_factory=list)
+    categoryDecisions: List[CategoryDecision] = Field(default_factory=list)
+
+
+# =========================
+# FINAL — DRAFT GENERATION
+# =========================
+
+class Draft(BaseModel):
     mcId: int
     mcTitle: str
     text: str
 
+    sourceCandidateIds: Optional[int]
 
-class ThirdStageResult(BaseModel): # Финальный результат третьего этапа
+
+class FinalResult(BaseModel):
     itemId: int
+
     detectedMcIds: List[int]
-    shouldSplit: bool # Решаем, делать ли сплит в принципе
+    shouldSplit: bool
+
     drafts: List[Draft] = Field(default_factory=list)
+
+# =========================
+# INPUT
+# =========================
+
+class Inpution(BaseModel):
+    mcTitle: str
+    description: str
